@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Plato Clone - Jeux Multi-Joueurs</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { font-family: Arial; background: #f0f0f0; text-align: center; }
+    #lobby, #game { max-width: 600px; margin: 20px auto; padding: 20px; background: white; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    #rooms { list-style: none; padding: 0; }
+    #rooms li { margin: 10px; padding: 10px; background: #eee; border-radius: 5px; }
+    #board { margin: 20px auto; }
+    .morpion { display: grid; grid-template-columns: repeat(3, 80px); }
+    .puissance4 { display: grid; grid-template-columns: repeat(7, 60px); grid-template-rows: repeat(6, 60px); }
+    .cell { width: 80px; height: 80px; border: 1px solid #333; font-size: 40px; cursor: pointer; display: flex; align-items: center; justify-content: center; background: #fff; }
+    .puissance4 .cell { width: 60px; height: 60px; border-radius: 50%; border: none; background: #ddd; } /* Cercles pour P4 */
+    .puissance4 .cell.R { background: red; } .puissance4 .cell.Y { background: yellow; }
+    #chat { height: 150px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+    #chat-input { width: 70%; } button { cursor: pointer; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="lobby">
+    <h1>Bienvenue sur Plato Clone !</h1>
+    <input id="username" placeholder="Ton pseudo" required>
+    <select id="gameType">
+      <option value="morpion">Morpion</option>
+      <option value="puissance4">Puissance 4</option>
+    </select>
+    <button onclick="createRoom()">Créer une room</button>
+    <h2>Rooms disponibles :</h2>
+    <ul id="rooms"></ul>
+  </div>
+
+  <div id="game" class="hidden">
+    <h1 id="gameTitle"></h1>
+    <div id="status"></div>
+    <div id="board"></div>
+    <div id="chat"></div>
+    <input id="chat-input" placeholder="Message...">
+    <button onclick="sendChat()">Envoyer</button>
+    <button onclick="leaveRoom()">Quitter</button>
+  </div>
+
+  <script>
+    const socket = io();
+    let roomId = null, username = '', symbol = '', gameType = '', myTurn = false;
+
+    const lobby = document.getElementById('lobby');
+    const game = document.getElementById('game');
+    const status = document.getElementById('status');
+    const board = document.getElementById('board');
+    const chat = document.getElementById('chat');
+    const chatInput = document.getElementById('chat-input');
+    const roomsList = document.getElementById('rooms');
+
+    socket.on('roomsList', (rooms) => {
+      roomsList.innerHTML = '';
+      rooms.forEach(r => {
+        const li = document.createElement('li');
+        li.innerHTML = `${r.gameType} - Joueurs: ${r.playerCount}/2 <button onclick="joinRoom('${r.id}')">Rejoindre</button>`;
+        roomsList.appendChild(li);
+      });
+    });
+
+    function createRoom() {
+      username = document.getElementById('username').value.trim();
+      gameType = document.getElementById('gameType').value;
+      if (username) socket.emit('createRoom', { username, gameType });
+    }
+
+    window.joinRoom = (id) => {
+      username = document.getElementById('username').value.trim();
+      if (username) socket.emit('joinRoom', { roomId: id, username });
+    };
+
+    socket.on('joinedRoom', (data) => {
+      roomId = data.roomId;
+      symbol = data.symbol;
+      lobby.classList.add('hidden');
+      game.classList.remove('hidden');
+      document.getElementById('gameTitle').textContent = gameType === 'morpion' ? 'Morpion' : 'Puissance 4';
+      status.textContent = 'En attente d\'un autre joueur...';
+      initBoard(gameType);
+    });
+
+    socket.on('playerJoined', ({ players }) => {
+      status.textContent = `Joueurs: ${players.map(p => p.username).join(' vs ')}`;
+    });
+
+    socket.on('startGame', ({ currentPlayer }) => {
+      myTurn = currentPlayer === symbol;
+      status.textContent = `Partie commencée ! Tour de ${currentPlayer}`;
+    });
+
+    socket.on('move', ({ index, symbol }) => updateBoard(index, symbol));
+
+    socket.on('turn', ({ currentPlayer }) => {
+      myTurn = currentPlayer === symbol;
+      status.textContent = `Tour de ${currentPlayer}`;
+    });
+
+    socket.on('win', ({ winner }) => {
+      status.textContent = `${winner} a gagné !`;
+      disableBoard();
+    });
+
+    socket.on('draw', () => {
+      status.textContent = 'Égalité !';
+      disableBoard();
+    });
+
+    socket.on('chat', ({ sender, message }) => {
+      const msg = document.createElement('div');
+      msg.textContent = `${sender}: ${message}`;
+      chat.appendChild(msg);
+      chat.scrollTop = chat.scrollHeight;
+    });
+
+    socket.on('playerLeft', () => {
+      status.textContent = 'L\'autre joueur s\'est déconnecté.';
+      disableBoard();
+    });
+
+    socket.on('error', (msg) => alert(msg));
+
+    function sendChat() {
+      const message = chatInput.value.trim();
+      if (message) {
+        socket.emit('chat', { roomId, message });
+        chatInput.value = '';
+      }
+    }
+
+    function leaveRoom() {
+      socket.disconnect(); // Simple, mais on peut améliorer
+      location.reload();
+    }
+
+    function initBoard(type) {
+      board.innerHTML = '';
+      board.className = type;
+      let size = type === 'morpion' ? 9 : 42; // 6*7
+      for (let i = 0; i < size; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.addEventListener('click', () => {
+          if (myTurn && isCellEmpty(cell)) {
+            const index = type === 'morpion' ? i : i % 7; // Pour P4, index = colonne
+            socket.emit('move', { roomId, index });
+          }
+        });
+        board.appendChild(cell);
+      }
+    }
+
+    function updateBoard(index, sym) {
+      if (gameType === 'morpion') {
+        board.children[index].textContent = sym;
+      } else {
+        // Pour P4, trouver la bonne cell (de bas en haut)
+        for (let row = 5; row >= 0; row--) {
+          const cellIndex = row * 7 + index;
+          if (!board.children[cellIndex].classList.contains('R') && !board.children[cellIndex].classList.contains('Y')) {
+            board.children[cellIndex].classList.add(sym);
+            break;
+          }
+        }
+      }
+    }
+
+    function isCellEmpty(cell) {
+      return !cell.textContent && !cell.classList.contains('R') && !cell.classList.contains('Y');
+    }
+
+    function disableBoard() {
+      Array.from(board.children).forEach(cell => cell.style.cursor = 'not-allowed');
+    }
+
+    chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendChat(); });
+  </script>
+</body>
+</html>
